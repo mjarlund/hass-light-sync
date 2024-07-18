@@ -13,7 +13,7 @@ pub fn capture_frame(capturer: &mut Capturer) -> Option<Frame> {
     })
 }
 
-/// Calculates the average color of a specified region of the frame.
+/// Calculates the average color of a specified region of the frame, ignoring black pixels.
 pub fn calculate_average_color(frame: &Frame, position: &str, skip_pixels: i16) -> [u32; 3] {
     let (x_start, x_end, y_start, y_end) = match position {
         "top" => (0, frame.width, 0, frame.height / 3),
@@ -32,15 +32,22 @@ pub fn calculate_average_color(frame: &Frame, position: &str, skip_pixels: i16) 
             let index = (y * frame.width + x) as usize * 3; // Calculate buffer index
 
             if index + 2 < frame.buffer.len() { // Ensure index does not exceed buffer length
-                color_sum.0 += frame.buffer[index] as u64;      // Red
-                color_sum.1 += frame.buffer[index + 1] as u64;  // Green
-                color_sum.2 += frame.buffer[index + 2] as u64;  // Blue
-                count += 1; // Increase count for each pixel processed
+                let r = frame.buffer[index];
+                let g = frame.buffer[index + 1];
+                let b = frame.buffer[index + 2];
+
+                // Check if the pixel is black; if not, include it in the averaging
+                if !(r == 0 && g == 0 && b == 0) {
+                    color_sum.0 += r as u64;      // Red
+                    color_sum.1 += g as u64;      // Green
+                    color_sum.2 += b as u64;      // Blue
+                    count += 1; // Increase count for each pixel processed
+                }
             }
         }
     }
 
-    if count == 0 { // Avoid division by zero
+    if count == 0 { // Avoid division by zero and handle case where all pixels might be black
         return [0, 0, 0];
     }
 
