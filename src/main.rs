@@ -1,18 +1,13 @@
-#[allow(unused_must_use)]
-
-extern crate captrs;
-extern crate reqwest;
-
 use captrs::*;
 use serde::{Deserialize, Serialize};
-use std::{time::Duration, sync::Arc};
-use console::Emoji;
-use tokio::task;
+use std::{time::Duration, sync::Arc, thread};
+use reqwest;
+use rayon::prelude::*;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct LightConfig {
     entity_name: String,
-    position: String, // Possible values: "top", "bottom", "left", "right"
+    position: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -29,8 +24,8 @@ struct Settings {
 #[derive(Serialize, Deserialize)]
 struct HASSApiBody {
     entity_id: String,
-    rgb_color: [u64; 3],
-    brightness: u64,
+    rgb_color: [u32; 3],
+    brightness: u32,
 }
 
 #[derive(Clone)]
@@ -41,21 +36,17 @@ struct Frame {
 }
 
 fn capture_frame(capturer: &mut Capturer) -> Option<Frame> {
-    let (width, height) = capturer.geometry();
-    match capturer.capture_frame() {
-        Ok(frame) => Some(Frame {
+    let (width, height) = capturer.geometry();  // Get the dimensions directly from capturer
+    capturer.capture_frame().ok().map(|frame| {
+        Frame {
             width: width as u32,
             height: height as u32,
-            buffer: frame.iter().flat_map(|pixel| vec![pixel.r, pixel.g, pixel.b]).collect(),
-        }),
-        Err(error) => {
-            println!("{} Failed to grab frame: {:?}", Emoji("❗ ", ""), error);
-            None
+            buffer: frame.into_iter().flat_map(|pixel| vec![pixel.r, pixel.g, pixel.b]).collect(),
         }
-    }
+    })
 }
 
-fn calculate_average_color(frame: &Frame, position: &str, skip_pixels: i16) -> Vec<u64> {
+fn calculate_average_color(frame: &Frame, position: &str, skip_pixels: i16) -> Vec<u32> {
     let (x_start, x_end, y_start, y_end) = match position {
         "top" => (0, frame.width, 0, frame.height / 3),
         "bottom" => (0, frame.width, 2 * frame.height / 3, frame.height),
@@ -64,30 +55,27 @@ fn calculate_average_color(frame: &Frame, position: &str, skip_pixels: i16) -> V
         _ => (0, frame.width, 0, frame.height),
     };
 
-    let mut r_sum = 0u64;
-    let mut g_sum = 0u64;
-    let mut b_sum = 0u64;
+    let mut color_sum = (0u64, 0u64, 0u64);
     let mut count = 0u64;
-
     for y in (y_start..y_end).step_by(skip_pixels as usize) {
         for x in (x_start..x_end).step_by(3 * skip_pixels as usize) {
-            let offset = ((y * frame.width + x) * 3) as usize;
-            r_sum += frame.buffer[offset] as u64;
-            g_sum += frame.buffer[offset + 1] as u64;
-            b_sum += frame.buffer[offset + 2] as u64;
+            let offset = (y * frame.width + x) * 3;
+            color_sum.0 += frame.buffer[offset as usize] as u64;
+            color_sum.1 += frame.buffer[offset as usize + 1] as u64;
+            color_sum.2 += frame.buffer[offset as usize + 2] as u64;
             count += 1;
         }
     }
 
-    vec![r_sum / count, g_sum / count, b_sum / count]
+    vec![(color_sum.0 / count) as u32, (color_sum.1 / count) as u32, (color_sum.2 / count) as u32]
 }
 
 async fn send_rgb(
-    client: &reqwest::Client,
-    api_endpoint: &str,
-    token: &str,
-    rgb_vec: Vec<u64>,
-    brightness: u64,
+    client: Arc<reqwest::Client>,
+    api_endpoint: String,
+    token: String,
+    rgb_vec: Vec<u32>,
+    brightness: u32,
     entity_name: String,
 ) {
     let api_body = HASSApiBody {
@@ -97,9 +85,7 @@ async fn send_rgb(
     };
 
     let url = format!("{}/api/services/light/turn_on", api_endpoint);
-
-    client
-        .post(&url)
+    client.post(&url)
         .header("Authorization", format!("Bearer {}", token))
         .json(&api_body)
         .send()
@@ -109,79 +95,37 @@ async fn send_rgb(
 
 #[tokio::main]
 async fn main() {
-    let term = console::Term::stdout();
-    term.set_title("HASS-Light-Sync running...");
+    let settingsfile = std::fs::read_to_string("settings.json").expect("settings.json file does not exist");
+    let settings: Settings = serde_json::from_str(&settingsfile).expect("Failed to parse settings");
 
-    println!("{}hass-light-sync - Starting...", Emoji("💡 ", ""));
-    println!("{}Reading config...", Emoji("⚙️ ", ""));
-    // read settings
-    let settingsfile =
-        std::fs::read_to_string("settings.json").expect("❌ settings.json file does not exist");
-
-    let settings: Settings =
-        serde_json::from_str(&settingsfile).expect("❌ Failed to parse settings. Please read the configuration section in the README");
-
-    println!("{}Config loaded successfully!", Emoji("✅ ", ""));
-
-    let grab_interval = settings.grab_interval as u64;
-    let skip_pixels = settings.skip_pixels;
-    let smoothing_factor = settings.smoothing_factor;
-    let api_endpoint = settings.api_endpoint.clone();
-    let token = settings.token.clone();
-
-    // create a capture device
-    let mut capturer =
-        Capturer::new(settings.monitor_id as usize)
-            .expect("❌ Failed to get Capture Object");
-
-    // create http client
-    let client = reqwest::Client::new();
-    let client = Arc::new(client);
-
-    let mut prev_avg_colors = vec![(0u64, 0u64, 0u64); settings.lights.len()];
+    let client = Arc::new(reqwest::Client::new());
+    let mut capturer = Capturer::new(settings.monitor_id as usize).expect("Failed to get Capture Object");
+    let mut prev_avg_colors = vec![(0u32, 0u32, 0u32); settings.lights.len()];
 
     loop {
-        // Capture frame and skip if no frame is fetched
-        let frame = match capture_frame(&mut capturer) {
-            Some(frame) => frame,
-            None => continue,
-        };
+        if let Some(frame) = capture_frame(&mut capturer) {
+            let avg_colors: Vec<_> = settings.lights.par_iter().map(|light| {
+                calculate_average_color(&frame, &light.position, settings.skip_pixels)
+            }).collect();
 
-        let mut tasks = Vec::new();
-        let settings = Arc::new(settings.clone());
+            for (i, avg_color) in avg_colors.into_iter().enumerate() {
+                let (sm_r, sm_g, sm_b) = (
+                    (settings.smoothing_factor * prev_avg_colors[i].0 as f32 + (1.0 - settings.smoothing_factor) * avg_color[0] as f32) as u32,
+                    (settings.smoothing_factor * prev_avg_colors[i].1 as f32 + (1.0 - settings.smoothing_factor) * avg_color[1] as f32) as u32,
+                    (settings.smoothing_factor * prev_avg_colors[i].2 as f32 + (1.0 - settings.smoothing_factor) * avg_color[2] as f32) as u32,
+                );
 
-        for (i, light) in settings.lights.iter().enumerate() {
-            let frame = frame.clone();
-            let client = Arc::clone(&client);
-            let api_endpoint = api_endpoint.clone();
-            let token = token.clone();
-            let light = light.clone();
+                prev_avg_colors[i] = (sm_r, sm_g, sm_b);
+                let smoothed_avg_color = vec![sm_r, sm_g, sm_b];
+                let brightness = *smoothed_avg_color.iter().max().unwrap_or(&0);
 
-            let avg_color = calculate_average_color(&frame, &light.position, skip_pixels);
+                let api_endpoint = settings.api_endpoint.clone();
+                let token = settings.token.clone();
 
-            let (sm_r, sm_g, sm_b) = (
-                smoothing_factor * prev_avg_colors[i].0 as f32 + (1.0 - smoothing_factor) * avg_color[0] as f32,
-                smoothing_factor * prev_avg_colors[i].1 as f32 + (1.0 - smoothing_factor) * avg_color[1] as f32,
-                smoothing_factor * prev_avg_colors[i].2 as f32 + (1.0 - smoothing_factor) * avg_color[2] as f32,
-            );
-
-            prev_avg_colors[i] = (sm_r as u64, sm_g as u64, sm_b as u64);
-
-            let smoothed_avg_color = vec![sm_r as u64, sm_g as u64, sm_b as u64];
-
-            let brightness = *smoothed_avg_color.iter().max().unwrap();
-
-            let task = task::spawn(async move {
-                send_rgb(&client, &api_endpoint, &token, smoothed_avg_color, brightness, light.entity_name).await;
-            });
-
-            tasks.push(task);
+                tokio::spawn(send_rgb(Arc::clone(&client), api_endpoint, token, smoothed_avg_color, brightness, settings.lights[i].entity_name.clone()));
+            }
         }
 
-        for task in tasks {
-            task.await.unwrap();
-        }
-
-        std::thread::sleep(Duration::from_millis(grab_interval));
+        thread::sleep(Duration::from_millis(settings.grab_interval as u64));
     }
 }
