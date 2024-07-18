@@ -1,4 +1,4 @@
-name: Build
+name: Build and Test
 
 on:
   push:
@@ -10,22 +10,36 @@ on:
 
 jobs:
   build:
-    name: Build and Test
-    runs-on: windows-latest
+    name: Build and Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
-    - uses: actions/checkout@v4
-      
+      - uses: actions/checkout@v4
 
-    - name: Set up Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        profile: minimal
-        toolchain: stable
-        override: true
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
 
-    - name: Build
-      run: cargo build
+      # Conditional step for installing dependencies on Linux and macOS
+      - name: Install dependencies on Linux and macOS
+        if: matrix.os != 'windows-latest'
+        run: |
+          if [[ ${{ runner.os }} == 'Linux' ]]; then
+            sudo apt-get update
+            sudo apt-get install -y libxrandr-dev libx11-dev
+          elif [[ ${{ runner.os }} == 'macOS' ]]; then
+            brew install --cask xquartz
+          fi
 
-    - name: Run tests
-      run: cargo test
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Run tests
+        run: cargo test --verbose
