@@ -4,15 +4,20 @@ extern crate captrs;
 extern crate reqwest;
 
 use captrs::*;
+use serde::{Deserialize, Serialize};
 use std::{time::Duration};
 use console::Emoji;
 
-use serde::{Deserialize, Serialize};
+#[derive(Serialize, Deserialize)]
+struct LightConfig {
+    entity_name: String,
+    position: String, // Possible values: "top", "bottom", "left", "right"
+}
 
 #[derive(Serialize, Deserialize)]
 struct Settings {
     api_endpoint: String,
-    light_entity_name: String,
+    lights: Vec<LightConfig>,
     token: String,
     grab_interval: i16,
     skip_pixels: i16,
@@ -27,17 +32,92 @@ struct HASSApiBody {
     brightness: u64,
 }
 
+struct Frame {
+    width: u32,
+    height: u32,
+    buffer: Vec<u8>,
+}
+
+fn capture_frame(capturer: &mut Capturer) -> Frame {
+    let (width, height) = capturer.geometry();
+    let buffer = match capturer.capture_frame() {
+        Ok(frame) => frame,
+        Err(error) => {
+            println!("{} Failed to grab frame: {:?}", Emoji("❗ ", ""), error);
+            std::thread::sleep(Duration::from_millis(100));
+            return capture_frame(capturer);
+        }
+    };
+
+    Frame {
+        width: width as u32,
+        height: height as u32,
+        buffer: buffer.iter().flat_map(|pixel| vec![pixel.r, pixel.g, pixel.b]).collect(),
+    }
+}
+
+fn calculate_average_color(frame: &Frame, position: &str) -> Vec<u64> {
+    let (x_start, x_end, y_start, y_end) = match position {
+        "top" => (0, frame.width, 0, frame.height / 3),
+        "bottom" => (0, frame.width, 2 * frame.height / 3, frame.height),
+        "left" => (0, frame.width / 3, 0, frame.height),
+        "right" => (2 * frame.width / 3, frame.width, 0, frame.height),
+        _ => (0, frame.width, 0, frame.height),
+    };
+
+    let mut r_sum = 0u64;
+    let mut g_sum = 0u64;
+    let mut b_sum = 0u64;
+    let mut count = 0u64;
+
+    for y in y_start..y_end {
+        for x in (x_start..x_end).step_by(3) {
+            let offset = ((y * frame.width + x) * 3) as usize;
+            r_sum += frame.buffer[offset] as u64;
+            g_sum += frame.buffer[offset + 1] as u64;
+            b_sum += frame.buffer[offset + 2] as u64;
+            count += 1;
+        }
+    }
+
+    vec![r_sum / count, g_sum / count, b_sum / count]
+}
+
+async fn send_rgb(
+    client: &reqwest::Client,
+    settings: &Settings,
+    rgb_vec: &Vec<u64>,
+    brightness: &u64,
+    entity_name: &String,
+) {
+    let api_body = HASSApiBody {
+        entity_id: entity_name.clone(),
+        rgb_color: [rgb_vec[0], rgb_vec[1], rgb_vec[2]],
+        brightness: *brightness,
+    };
+
+    let url = format!("{}/api/services/light/turn_on", settings.api_endpoint);
+    let token = format!("Bearer {}", settings.token);
+
+    client
+        .post(&url)
+        .header("Authorization", token)
+        .json(&api_body)
+        .send()
+        .await
+        .expect("Failed to send RGB data");
+}
+
 #[tokio::main]
 async fn main() {
     let term = console::Term::stdout();
     term.set_title("HASS-Light-Sync running...");
-    
+
     println!("{}hass-light-sync - Starting...", Emoji("💡 ", ""));
     println!("{}Reading config...", Emoji("⚙️ ", ""));
     // read settings
     let settingsfile =
         std::fs::read_to_string("settings.json").expect("❌ settings.json file does not exist");
-
 
     let settings: Settings =
         serde_json::from_str(settingsfile.as_str()).expect("❌ Failed to parse settings. Please read the configuration section in the README");
@@ -61,109 +141,33 @@ async fn main() {
     let client = reqwest::Client::new();
 
     let (mut prev_r, mut prev_g, mut prev_b) = (0, 0, 0);
-    
+
     println!();
 
     let mut last_timestamp = std::time::Instant::now();
 
     loop {
-        // allocate a vector array for the pixels of the display
-        let ps: Vec<Bgr8>;
+        // Capture frame and calculate average colors for different positions
+        let frame = capture_frame(&mut capturer);
+        let top_avg = calculate_average_color(&frame, "top");
+        let bottom_avg = calculate_average_color(&frame, "bottom");
+        let left_avg = calculate_average_color(&frame, "left");
+        let right_avg = calculate_average_color(&frame, "right");
 
-        // try to grab a frame and fill it into the vector array, if successful, otherwise sleep for 100 ms and skip this frame.
-        match capturer.capture_frame() {
-            Ok(res) => ps = res,
-            Err(error) => {
-                println!("{} Failed to grab frame: {:?}", Emoji("❗ ", ""), error);
-                std::thread::sleep(Duration::from_millis(100));
-                continue;
-            }
+        // Placeholder for brightness calculation
+        let brightness = 128;
+
+        for light in &settings.lights {
+            let avg_color = match light.position.as_str() {
+                "top" => &top_avg,
+                "bottom" => &bottom_avg,
+                "left" => &left_avg,
+                "right" => &right_avg,
+                _ => &top_avg, // Default case
+            };
+            send_rgb(&client, &settings, avg_color, &brightness, &light.entity_name).await;
         }
 
-        let (mut total_r, mut total_g, mut total_b) = (0, 0, 0);
-
-        let mut count = 0;
-
-        // for every nth pixel, add the rgb value
-        for Bgr8 { r, g, b, .. } in ps.into_iter() {
-            if count % steps == 0 {
-                total_r += r as u64;
-                total_g += g as u64;
-                total_b += b as u64;
-            }
-            count += 1;
-        }
-
-        // calculate avg colors
-        let (avg_r, avg_g, avg_b) = (total_r / size, total_g / size, total_b / size);
-
-        // smoothing
-        let (sm_r, sm_g, sm_b) = (
-            smoothing_factor * prev_r as f32 + (1.0 - smoothing_factor) * avg_r as f32,
-            smoothing_factor * prev_g as f32 + (1.0 - smoothing_factor) * avg_g as f32,
-            smoothing_factor * prev_b as f32 + (1.0 - smoothing_factor) * avg_b as f32,
-        );
-
-        // store into prev
-        prev_r = sm_r as u64;
-        prev_g = sm_g as u64;
-        prev_b = sm_b as u64;
-
-        // put into vector
-        let avg_arr = vec![prev_r, prev_g, prev_b];
-
-        // get the highest rgb component value -> brightness
-        let brightness = avg_arr.iter().max().unwrap();
-
-        let time_elapsed = last_timestamp.elapsed().as_millis();
-        last_timestamp = std::time::Instant::now();
-
-        term.move_cursor_up(1);
-        term.clear_line();
-        println!("{}Current average color: {:?} - Brightness: {} - FPS: {}", Emoji("💡 ", ""), avg_arr, brightness, 1000 / time_elapsed);
-        // println!("Avg Color: {:?}    Brightness: {}", avg_arr, brightness);
-        send_rgb(&client, &settings, &avg_arr, brightness).await;
-        std::thread::sleep(Duration::from_millis(grab_interval));
-    }
-}
-
-
-
-async fn send_rgb(
-    client: &reqwest::Client,
-    settings: &Settings,
-    rgb_vec: &std::vec::Vec<u64>,
-    brightness: &u64,
-) {
-    let api_body = HASSApiBody {
-        entity_id: String::from(settings.light_entity_name.as_str()),
-        rgb_color: [rgb_vec[0], rgb_vec[1], rgb_vec[2]],
-        brightness: *brightness,
-    };
-
-    let _response = client
-        .post(format!(
-            "{}/api/services/light/turn_on",
-            settings.api_endpoint.as_str()
-        ))
-        .header(
-            "Authorization",
-            format!("Bearer {}", settings.token).as_str(),
-        )
-        .json(&api_body)
-        .send()
-        .await;
-
-    match _response{
-        Ok(_res) => {
-            if _res.status() != 200 {
-                println!("{}Connection to Home Assistant failed: HTTP {}", Emoji("❌ ",""), _res.status());
-                std::process::exit(0);
-            }
-        },
-        Err(e) => {
-            println!("{}Connection to Home Assistant failed: {}", Emoji("❌ ", ""), e);
-            std::process::exit(0);
-        }
+        std::thread::sleep(Duration::from_millis(settings.grab_interval as u64));
     }
 }

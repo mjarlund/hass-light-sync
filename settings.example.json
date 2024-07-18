@@ -1,0 +1,12 @@
+{
+    "api_endpoint": "http://homeassistant.local:8123",
+    "lights": [
+        {"entity_name": "light.living_room", "position": "top"},
+        {"entity_name": "light.kitchen", "position": "bottom"}
+    ],
+    "token": "YOUR_ACCESS_TOKEN",
+    "grab_interval": 100,
+    "skip_pixels": 10,
+    "smoothing_factor": 0.5,
+    "monitor_id": 0
+}
