@@ -1,6 +1,6 @@
 # hass-light-sync
 
-`hass-light-sync` is a program designed to capture the display's image and send the average color to a light in Home Assistant. This project is inspired by solutions like Philips Hue Sync and Ambilight but currently supports only a single light.
+`hass-light-sync` is a program designed to capture the display's image and send the average color to a light in Home Assistant. This project is inspired by solutions like Philips Hue Sync and Ambilight.
 
 ## Installation
 
