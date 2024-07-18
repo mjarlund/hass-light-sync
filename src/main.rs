@@ -136,15 +136,10 @@ async fn main() {
     let mut prev_avg_colors = vec![(0u64, 0u64, 0u64); settings.lights.len()];
 
     loop {
-        // Retry logic for capturing frame
-        let frame = loop {
-            match capture_frame(&mut capturer) {
-                Some(frame) => break frame,
-                None => {
-                    std::thread::sleep(Duration::from_millis(100));
-                    continue;
-                }
-            }
+        // Capture frame and skip if no frame is fetched
+        let frame = match capture_frame(&mut capturer) {
+            Some(frame) => frame,
+            None => continue,
         };
 
         let mut tasks = Vec::new();
