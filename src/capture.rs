@@ -14,26 +14,98 @@ pub fn capture_frame(capturer: &mut Capturer) -> Option<Frame> {
 }
 
 /// Calculates the average color of a specified region of the frame.
-pub fn calculate_average_color(frame: &Frame, position: &str, skip_pixels: i16) -> Vec<u32> {
+pub fn calculate_average_color(frame: &Frame, position: &str, skip_pixels: i16) -> [u32; 3] {
     let (x_start, x_end, y_start, y_end) = match position {
         "top" => (0, frame.width, 0, frame.height / 3),
         "bottom" => (0, frame.width, 2 * frame.height / 3, frame.height),
         "left" => (0, frame.width / 3, 0, frame.height),
         "right" => (2 * frame.width / 3, frame.width, 0, frame.height),
-        _ => (0, frame.width, 0, frame.height),
+        _ => (0, frame.width, 0, frame.height), // Default is full frame
     };
 
-    let mut color_sum = (0u64, 0u64, 0u64);
-    let mut count = 0u64;
+    let mut color_sum = (0u64, 0u64, 0u64); // Initialize sums for R, G, B
+    let mut count = 0u64; // Initialize pixel count for averaging
+
+    // Iterate over each pixel in the specified region
     for y in (y_start..y_end).step_by(skip_pixels as usize) {
-        for x in (x_start..x_end).step_by(3 * skip_pixels as usize) {
-            let offset = (y * frame.width + x) * 3;
-            color_sum.0 += frame.buffer[offset as usize] as u64;
-            color_sum.1 += frame.buffer[offset as usize + 1] as u64;
-            color_sum.2 += frame.buffer[offset as usize + 2] as u64;
-            count += 1;
+        for x in (x_start..x_end).step_by(skip_pixels as usize) {
+            let index = (y * frame.width + x) as usize * 3; // Calculate buffer index
+
+            if index + 2 < frame.buffer.len() { // Ensure index does not exceed buffer length
+                color_sum.0 += frame.buffer[index] as u64;      // Red
+                color_sum.1 += frame.buffer[index + 1] as u64;  // Green
+                color_sum.2 += frame.buffer[index + 2] as u64;  // Blue
+                count += 1; // Increase count for each pixel processed
+            }
         }
     }
 
-    vec![(color_sum.0 / count) as u32, (color_sum.1 / count) as u32, (color_sum.2 / count) as u32]
+    if count == 0 { // Avoid division by zero
+        return [0, 0, 0];
+    }
+
+    // Calculate averages for each color
+    [
+        (color_sum.0 / count) as u32, // Average Red
+        (color_sum.1 / count) as u32, // Average Green
+        (color_sum.2 / count) as u32, // Average Blue
+    ]
+}
+
+/// Smooths the color transitions between frames.
+pub fn smooth_colors(current_avg: (u32, u32, u32), new_avg: [u32; 3], smoothing_factor: f32) -> (u32, u32, u32) {
+    let (current_r, current_g, current_b) = current_avg;
+    let (new_r, new_g, new_b) = (new_avg[0], new_avg[1], new_avg[2]);
+
+    let sm_r = (smoothing_factor * current_r as f32 + (1.0 - smoothing_factor) * new_r as f32) as u32;
+    let sm_g = (smoothing_factor * current_g as f32 + (1.0 - smoothing_factor) * new_g as f32) as u32;
+    let sm_b = (smoothing_factor * current_b as f32 + (1.0 - smoothing_factor) * new_b as f32) as u32;
+
+    (sm_r, sm_g, sm_b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::iter;
+
+    // Helper function to create a mock frame
+    fn mock_frame(width: u32, height: u32, fill: u8) -> Frame {
+        let size = (width * height * 3) as usize;
+        let buffer: Vec<u8> = iter::repeat(fill).take(size).collect();
+        Frame {
+            width,
+            height,
+            buffer,
+        }
+    }
+
+    #[test]
+    fn test_calculate_average_color() {
+        let frame = mock_frame(100, 100, 255);  // Create a white frame
+        let avg_color = calculate_average_color(&frame, "top", 1);
+        assert_eq!(avg_color, [255, 255, 255]);
+
+        let frame = mock_frame(100, 100, 0);  // Create a black frame
+        let avg_color = calculate_average_color(&frame, "bottom", 1);
+        assert_eq!(avg_color, [0, 0, 0]);
+
+        // Test with skipping pixels
+        let avg_color = calculate_average_color(&frame, "left", 10);
+        assert_eq!(avg_color, [0, 0, 0]);
+    }
+
+    #[test]
+    fn test_smooth_colors() {
+        let current_colors = (100, 150, 200);
+        let new_colors = [110, 160, 210];
+        let smoothed = smooth_colors(current_colors, new_colors, 0.5);
+        assert_eq!(smoothed, (105, 155, 205));
+
+        let smoothed = smooth_colors(current_colors, new_colors, 0.0);
+        assert_eq!(smoothed, (110, 160, 210));
+
+        let smoothed = smooth_colors(current_colors, new_colors, 1.0);
+        assert_eq!(smoothed, (100, 150, 200));
+    }
 }
