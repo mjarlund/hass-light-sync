@@ -19,13 +19,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
         if: matrix.os != 'windows-latest'

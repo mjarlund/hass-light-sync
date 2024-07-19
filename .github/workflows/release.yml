@@ -25,6 +25,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v2
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Install X11 dependencies on Linux
         if: matrix.os == 'ubuntu-latest'
