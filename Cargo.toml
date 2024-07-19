@@ -2,18 +2,19 @@
 name = "hass-light-sync"
 version = "0.2.0"
 edition = "2021"
-description = "Synchronizes your display's average color to a light in Home Assistant, inspired by Philips Hue Sync and Ambilight."
+description = "Synchronizes your display's average color to lights in Home Assistant, inspired by Philips Hue Sync and Ambilight."
 repository = "https://github.com/mjarlund/hass-light-sync"
 license = "MIT"
 
 [dependencies]
-colored = "2.0"
+colored = "2.1"
 log = "0.4"
-env_logger = "0.9"
-captrs = "0.3.1"
+env_logger = "0.11"
+captrs = "0.3"
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 console = "0.15"
-tokio = { version = "1.0", features = ["full"] }
-rayon = "1.5"
+tokio = { version = "1.38", features = ["full"] }
+rayon = "1.10"
+futures = "0.3"

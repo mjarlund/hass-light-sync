@@ -1,75 +1,49 @@
-name: Rust
+name: Release
 
 on:
   push:
     tags:
       - "v*.*.*"
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-linux:
+  build:
+    runs-on: ${{ matrix.os }}
 
-    runs-on: ubuntu-latest
-    
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            artifact_name: hass-light-sync-${{ steps.tagName.outputs.tag }}-linux.zip
+            binary_files: target/release/hass-light-sync settings.json
+          - os: windows-latest
+            artifact_name: hass-light-sync-${{ steps.tagName.outputs.tag }}-win.zip
+            binary_files: target/release/hass-light-sync.exe settings.json
+
     steps:
-    - name: Install X11 dependencies on Linux
-      run: sudo apt-get install -y libxrandr-dev
-    - uses: actions/checkout@v2
-    - uses: olegtarasov/get-tag@v2.1
-      id: tagName
-    - name: Build
-      run: cargo build --release --verbose
-    - name: Zip
-      uses: papeloto/action-zip@v1
-      with:
-       files: target/release/hass-light-sync settings.json
-       dest: hass-light-sync-${{ steps.tagName.outputs.tag }}-linux.zip
-    - name: Release
-      uses: softprops/action-gh-release@v1
-      with:
-          files: hass-light-sync-${{ steps.tagName.outputs.tag }}-linux.zip
-          tag_name: ${{ steps.tagName.outputs.tag }}
-      
-      
-  build-windows:
-    runs-on: windows-latest
-    
-    steps:
-    - uses: actions/checkout@v2
-    - uses: olegtarasov/get-tag@v2.1
-      id: tagName
-    - name: Build
-      run: cargo build --release --verbose
-    - name: Zip
-      uses: papeloto/action-zip@v1
-      with:
-       files: target/release/hass-light-sync.exe settings.json
-       dest: hass-light-sync-${{ steps.tagName.outputs.tag }}-win.zip
-    - name: Release
-      uses: softprops/action-gh-release@v1
-      with:
-          files: hass-light-sync-${{ steps.tagName.outputs.tag }}-win.zip
-          tag_name: ${{ steps.tagName.outputs.tag }}
-          
-  build-mac:
-    runs-on: macos-latest
-    
-    steps:
-    - name: Install X11 dependencies on MacOS
-      run: brew install --cask xquartz
-    - uses: actions/checkout@v2
-    - uses: olegtarasov/get-tag@v2.1
-      id: tagName
-    - name: Build
-      run: cargo build --release --verbose
-    - name: Zip
-      uses: papeloto/action-zip@v1
-      with:
-       files: target/release/hass-light-sync settings.json
-       dest: hass-light-sync-${{ steps.tagName.outputs.tag }}-macos.zip
-    - name: Release
-      uses: softprops/action-gh-release@v1
-      with:
-          files: hass-light-sync-${{ steps.tagName.outputs.tag }}-macos.zip
+      - uses: actions/checkout@v2
+
+      - name: Install X11 dependencies on Linux
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get install -y libxrandr-dev
+
+      - uses: olegtarasov/get-tag@v2.1
+        id: tagName
+
+      - name: Build
+        run: cargo build --release --verbose
+
+      - name: Zip
+        uses: papeloto/action-zip@v1
+        with:
+          files: ${{ matrix.binary_files }}
+          dest: ${{ matrix.artifact_name }}
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ matrix.artifact_name }}
           tag_name: ${{ steps.tagName.outputs.tag }}
