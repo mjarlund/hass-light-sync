@@ -17,8 +17,6 @@ pub struct Settings {
     pub smoothing_factor: f32,
     #[serde(default = "default_monitor_id")]
     pub monitor_id: i16,
-    #[serde(default = "default_enable_api_calls")]
-    pub enable_api_calls: bool,
 }
 
 fn default_grab_interval() -> i16 {
@@ -33,9 +31,6 @@ fn default_monitor_id() -> i16 {
     1
 }
 
-fn default_enable_api_calls() -> bool {
-    true
-}
 
 pub fn load_settings(file_path: &str) -> Settings {
     use std::fs::File;

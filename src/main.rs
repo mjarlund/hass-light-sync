@@ -1,12 +1,13 @@
-use crate::settings::load_settings;
+use crate::settings::{load_settings, Settings};
 use crate::capture::{calculate_average_color, smooth_colors};
-use crate::api::send_rgb;
+use crate::api::WebSocketClient;
 use scap::{
     capturer::{Capturer, Options},
     frame::Frame,
 };
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 use log::{info, error, warn};
 use env_logger::Env;
 use colored::*;
@@ -49,7 +50,7 @@ async fn main() {
 
     let settings = load_settings("settings.json");
 
-    if settings.monitor_id >= targets.len() as i16 {
+    if settings.monitor_id > targets.len() as i16 {
         error!("❌ Invalid monitor_id. Must be less than the number of monitors.");
         return;
     }
@@ -61,25 +62,31 @@ async fn main() {
     info!("🎯 Selected target: {:?}", selected_targets);
 
     let options = Options {
-        fps: 60,
+        fps: 30,
         targets: selected_targets,
-        show_cursor: true,
-        show_highlight: true,
+        show_cursor: false,
+        show_highlight: false,
         excluded_targets: None,
         output_type: scap::frame::FrameType::RGB,
         output_resolution: scap::capturer::Resolution::_720p,
         ..Default::default()
     };
 
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_clone = Arc::clone(&stop);
+    tokio::spawn(handle_signals(stop_clone));
+
+    let websocket_url = settings.api_endpoint.clone();
+    let token = settings.token.clone();
+
+    let ws_client = Arc::new(Mutex::new(WebSocketClient::new(websocket_url, token).await.expect("Failed to create WebSocket client")));
+
+    let prev_avg_colors: HashMap<String, (u32, u32, u32)> = HashMap::new();
+
     let mut capturer = Capturer::new(options);
     capturer.start_capture();
 
-    let client = Arc::new(reqwest::Client::new());
-    let mut prev_avg_colors: HashMap<String, (u32, u32, u32)> = HashMap::new();
-    let stop = Arc::new(AtomicBool::new(false));
-
-    let stop_clone = Arc::clone(&stop);
-    tokio::spawn(handle_signals(stop_clone));
+    let mut last_process_time = Instant::now();
 
     loop {
         if stop.load(Ordering::SeqCst) {
@@ -87,24 +94,35 @@ async fn main() {
         }
 
         match capturer.get_next_frame() {
-            Ok(Frame::RGB(frame)) => process_frame(&frame, &settings, &client, &mut prev_avg_colors).await,
+            Ok(Frame::RGB(frame)) => {
+                if last_process_time.elapsed() >= Duration::from_millis(settings.grab_interval as u64) {
+                    let frame_clone = frame.clone();
+                    let settings_clone = settings.clone();
+                    let ws_client_clone = Arc::clone(&ws_client);
+                    let mut prev_avg_colors_clone = prev_avg_colors.clone();
+
+                    tokio::spawn(async move {
+                        process_frame(&frame_clone, &settings_clone, &ws_client_clone, &mut prev_avg_colors_clone).await;
+                    });
+
+                    last_process_time = Instant::now();
+                }
+            }
             _ => {
                 warn!("⚠️ Failed to get next RGB frame. Retrying...");
-                tokio::time::sleep(Duration::from_millis(1000)).await;
             }
         }
-
-        tokio::time::sleep(Duration::from_millis(settings.grab_interval as u64)).await;
     }
 
     capturer.stop_capture();
+    ws_client.lock().await.close().await.expect("Failed to close WebSocket connection");
 }
 
 async fn process_frame(
     frame: &scap::frame::RGBFrame,
-    settings: &settings::Settings,
-    client: &Arc<reqwest::Client>,
-    prev_avg_colors: &mut HashMap<String, (u32, u32, u32)>
+    settings: &Settings,
+    ws_client: &Arc<Mutex<WebSocketClient>>,
+    prev_avg_colors: &mut HashMap<String, (u32, u32, u32)>,
 ) {
     let positions = vec!["top", "bottom", "left", "right"];
     let mut position_colors = HashMap::new();
@@ -132,20 +150,23 @@ async fn process_frame(
     info!("{}", log_message);
 
     // Assign smoothed colors to lights and send data if API calls are enabled
+    let mut tasks = Vec::new();
     for light in &settings.lights {
         if let Some(smoothed_color) = position_colors.get(&light.position) {
-            if settings.enable_api_calls {
-                let brightness = smoothed_color.0.max(smoothed_color.1).max(smoothed_color.2);
-                let send_rgb_future = send_rgb(
-                    Arc::clone(&client),
-                    settings.api_endpoint.clone(),
-                    settings.token.clone(),
-                    vec![smoothed_color.0, smoothed_color.1, smoothed_color.2],
-                    brightness,
-                    light.entity_name.clone(),
-                );
-                tokio::spawn(send_rgb_future);
-            }
+            let brightness = smoothed_color.0.max(smoothed_color.1).max(smoothed_color.2);
+            let entity_name = light.entity_name.clone();
+            let rgb_vec = vec![smoothed_color.0, smoothed_color.1, smoothed_color.2];
+            let ws_client_clone = Arc::clone(&ws_client);
+            tasks.push(tokio::spawn(async move {
+                if let Err(e) = ws_client_clone.lock().await.send_rgb(rgb_vec, brightness, entity_name).await {
+                    error!("❌ Failed to send RGB data: {:?}", e);
+                }
+            }));
         }
+    }
+
+    // Await all tasks
+    for task in tasks {
+        let _ = task.await;
     }
 }
