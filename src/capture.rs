@@ -1,14 +1,15 @@
-use scap::frame::{BGRAFrame};
+use image::RgbaImage;
 use rayon::prelude::*;
 
-/// Calculates the average color of a specified region of the frame, ignoring black pixels.
-pub fn calculate_average_color(frame: &BGRAFrame, position: &str) -> [u32; 3] {
+/// Calculates the average color of a specified region of the image, ignoring black pixels.
+pub fn calculate_average_color(image: &RgbaImage, position: &str) -> [u32; 3] {
+    let (width, height) = image.dimensions();
     let (x_start, x_end, y_start, y_end) = match position {
-        "top" => (0, frame.width, 0, frame.height / 3),
-        "bottom" => (0, frame.width, 2 * frame.height / 3, frame.height),
-        "left" => (0, frame.width / 3, 0, frame.height),
-        "right" => (2 * frame.width / 3, frame.width, 0, frame.height),
-        _ => (0, frame.width, 0, frame.height), // Default is full frame
+        "top" => (0, width, 0, height / 3),
+        "bottom" => (0, width, 2 * height / 3, height),
+        "left" => (0, width / 3, 0, height),
+        "right" => (2 * width / 3, width, 0, height),
+        _ => (0, width, 0, height), // Default is full image
     };
 
     let (color_sum, count) = (y_start..y_end).into_par_iter().map(|y| {
@@ -16,20 +17,15 @@ pub fn calculate_average_color(frame: &BGRAFrame, position: &str) -> [u32; 3] {
         let mut local_count = 0u64; // Local pixel count for averaging
 
         for x in x_start..x_end {
-            let index = (y * frame.width + x) as usize * 4; // Calculate buffer index (BGRA)
-            if index + 3 < frame.data.len() { // Ensure index does not exceed buffer length
-                let b = frame.data[index];
-                let g = frame.data[index + 1];
-                let r = frame.data[index + 2];
-                let a = frame.data[index + 3];
+            let pixel = image.get_pixel(x, y);
+            let [r, g, b, a] = pixel.0;
 
-                // Check if the pixel is black and not transparent; if not, include it in the averaging
-                if !(r == 0 && g == 0 && b == 0) && a > 0 {
-                    local_color_sum.0 += r as u64; // Red
-                    local_color_sum.1 += g as u64; // Green
-                    local_color_sum.2 += b as u64; // Blue
-                    local_count += 1; // Increase count for each pixel processed
-                }
+            // Check if the pixel is black and not transparent; if not, include it in the averaging
+            if !(r == 0 && g == 0 && b == 0) && a > 0 {
+                local_color_sum.0 += r as u64; // Red
+                local_color_sum.1 += g as u64; // Green
+                local_color_sum.2 += b as u64; // Blue
+                local_count += 1; // Increase count for each pixel processed
             }
         }
 
@@ -68,33 +64,26 @@ pub fn smooth_colors(current_avg: (u32, u32, u32), new_avg: [u32; 3], smoothing_
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::iter;
+    use image::{ImageBuffer, Rgba};
 
-    // Helper function to create a mock frame
-    fn mock_frame(width: i32, height: i32, fill: u8) -> BGRAFrame {
-        let size = (width * height * 4) as usize; // BGRA
-        let data: Vec<u8> = iter::repeat(fill).take(size).collect();
-        BGRAFrame {
-            display_time: 0,
-            width,
-            height,
-            data,
-        }
+    // Helper function to create a mock image
+    fn mock_image(width: u32, height: u32, fill: u8) -> RgbaImage {
+        ImageBuffer::from_pixel(width, height, Rgba([fill, fill, fill, 255]))
     }
 
     #[test]
     fn test_calculate_average_color() {
-        let frame = mock_frame(100, 100, 255);  // Create a white frame
-        let avg_color = calculate_average_color(&frame, "top");
+        let image = mock_image(100, 100, 255);  // Create a white image
+        let avg_color = calculate_average_color(&image, "top");
         assert_eq!(avg_color, [255, 255, 255]);
 
-        let frame = mock_frame(100, 100, 0);  // Create a black frame
-        let avg_color = calculate_average_color(&frame, "bottom");
+        let image = mock_image(100, 100, 0);  // Create a black image
+        let avg_color = calculate_average_color(&image, "bottom");
         assert_eq!(avg_color, [0, 0, 0]);
 
-        // Test with skipping pixels
-        let avg_color = calculate_average_color(&frame, "left");
-        assert_eq!(avg_color, [0, 0, 0]);
+        let image = mock_image(100, 100, 128);  // Create a gray image
+        let avg_color = calculate_average_color(&image, "left");
+        assert_eq!(avg_color, [128, 128, 128]);
     }
 
     #[test]

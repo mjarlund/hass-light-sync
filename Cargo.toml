@@ -10,7 +10,6 @@ license = "MIT"
 colored = "2.1"
 log = "0.4"
 env_logger = "0.11"
-scap = "0.0.5"
 image = "0.25.2"
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -21,3 +20,4 @@ rayon = "1.10"
 futures = "0.3"
 tokio-tungstenite = "0.23.1"
 futures-util = "0.3.30"
+xcap = "0.0.10"

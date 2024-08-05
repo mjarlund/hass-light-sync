@@ -1,18 +1,17 @@
 use crate::settings::{load_settings, Settings};
 use crate::capture::{calculate_average_color, smooth_colors};
 use crate::api::WebSocketClient;
-use scap::{
-    capturer::{Capturer, Options},
-    frame::Frame,
-};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use log::{info, error, warn};
+use log::{info, error};
 use env_logger::Env;
 use colored::*;
 use std::collections::HashMap;
+use std::time::Duration;
+use image::RgbaImage;
 use tokio::signal;
+use tokio::time::interval;
+use xcap::Monitor;
 
 mod settings;
 mod capture;
@@ -33,44 +32,20 @@ async fn handle_signals(stop: Arc<AtomicBool>) {
 async fn main() {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    if !scap::is_supported() {
-        error!("❌ Platform not supported");
-        return;
-    }
-    info!("✅ Platform supported");
+    let monitors = Monitor::all().unwrap();
 
-    if !scap::has_permission() && !scap::request_permission() {
-        error!("❌ Permission denied");
-        return;
-    }
-    info!("✅ Permission granted");
-
-    let targets = scap::get_targets();
-    info!("🎯 Available targets: {:?}", targets);
+    // Log available monitors
+    info!("🖥️ Available monitors: {:?}", monitors);
 
     let settings = load_settings("settings.json");
 
-    if settings.monitor_id > targets.len() as i16 {
+    if settings.monitor_id > monitors.len() as i16 {
         error!("❌ Invalid monitor_id. Must be less than the number of monitors.");
         return;
     }
 
-    let selected_targets = targets.into_iter()
-        .filter(|t| t.id as i16 == settings.monitor_id)
-        .collect::<Vec<_>>();
+    let selected_monitor = monitors.iter().find(|m| m.id() as i16 == settings.monitor_id).unwrap();
 
-    info!("🎯 Selected target: {:?}", selected_targets);
-
-    let options = Options {
-        fps: 30,
-        targets: selected_targets,
-        show_cursor: false,
-        show_highlight: false,
-        excluded_targets: None,
-        output_type: scap::frame::FrameType::BGRAFrame,
-        output_resolution: scap::capturer::Resolution::_720p,
-        ..Default::default()
-    };
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = Arc::clone(&stop);
@@ -83,43 +58,31 @@ async fn main() {
 
     let prev_avg_colors: HashMap<String, (u32, u32, u32)> = HashMap::new();
 
-    let mut capturer = Capturer::new(options);
-    capturer.start_capture();
-
-    let mut last_process_time = Instant::now();
+    let mut tick_interval = interval(Duration::from_millis(settings.grab_interval as u64));
 
     loop {
         if stop.load(Ordering::SeqCst) {
             break;
         }
 
-        match capturer.get_next_frame() {
-            Ok(Frame::BGRA(frame)) => {
-                if last_process_time.elapsed() >= Duration::from_millis(settings.grab_interval as u64) {
-                    let frame_clone = frame.clone();
-                    let settings_clone = settings.clone();
-                    let ws_client_clone = Arc::clone(&ws_client);
-                    let mut prev_avg_colors_clone = prev_avg_colors.clone();
+        tick_interval.tick().await;
 
-                    tokio::spawn(async move {
-                        process_frame(&frame_clone, &settings_clone, &ws_client_clone, &mut prev_avg_colors_clone).await;
-                    });
+        let image = selected_monitor.capture_image().unwrap();
 
-                    last_process_time = Instant::now();
-                }
-            }
-            _ => {
-                warn!("⚠️ Failed to get next RGB frame. Retrying...");
-            }
-        }
+        let settings_clone = settings.clone();
+        let ws_client_clone = Arc::clone(&ws_client);
+        let mut prev_avg_colors_clone = prev_avg_colors.clone();
+
+        tokio::spawn(async move {
+            process_frame(&image.clone(), &settings_clone, &ws_client_clone, &mut prev_avg_colors_clone).await;
+        });
     }
 
-    capturer.stop_capture();
     ws_client.lock().await.close().await.expect("Failed to close WebSocket connection");
 }
 
 async fn process_frame(
-    frame: &scap::frame::BGRAFrame,
+    image: &RgbaImage,
     settings: &Settings,
     ws_client: &Arc<Mutex<WebSocketClient>>,
     prev_avg_colors: &mut HashMap<String, (u32, u32, u32)>,
@@ -129,7 +92,7 @@ async fn process_frame(
 
     // Calculate and smooth colors for each position
     for &pos in &positions {
-        let new_color = calculate_average_color(&frame, pos);
+        let new_color = calculate_average_color(&image, pos);
         let smoothed_color = smooth_colors(
             *prev_avg_colors.entry(pos.to_string()).or_insert((0, 0, 0)),
             new_color,
