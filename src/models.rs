@@ -6,10 +6,3 @@ pub struct HASSApiBody {
     pub rgb_color: [u32; 3],
     pub brightness: u32,
 }
-
-#[derive(Clone)]
-pub struct Frame {
-    pub width: u32,
-    pub height: u32,
-    pub buffer: Vec<u8>,
-}

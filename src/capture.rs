@@ -1,20 +1,8 @@
-use captrs::Capturer;
-use crate::models::Frame;
-
-/// Captures a single frame from the screen capturer.
-pub fn capture_frame(capturer: &mut Capturer) -> Option<Frame> {
-    let (width, height) = capturer.geometry();  // Get the dimensions directly from capturer
-    capturer.capture_frame().ok().map(|frame| {
-        Frame {
-            width: width as u32,
-            height: height as u32,
-            buffer: frame.into_iter().flat_map(|pixel| vec![pixel.r, pixel.g, pixel.b]).collect(),
-        }
-    })
-}
+use scap::frame::RGBFrame;
+use rayon::prelude::*;
 
 /// Calculates the average color of a specified region of the frame, ignoring black pixels.
-pub fn calculate_average_color(frame: &Frame, position: &str, skip_pixels: i16) -> [u32; 3] {
+pub fn calculate_average_color(frame: &RGBFrame, position: &str) -> [u32; 3] {
     let (x_start, x_end, y_start, y_end) = match position {
         "top" => (0, frame.width, 0, frame.height / 3),
         "bottom" => (0, frame.width, 2 * frame.height / 3, frame.height),
@@ -23,29 +11,34 @@ pub fn calculate_average_color(frame: &Frame, position: &str, skip_pixels: i16) 
         _ => (0, frame.width, 0, frame.height), // Default is full frame
     };
 
-    let mut color_sum = (0u64, 0u64, 0u64); // Initialize sums for R, G, B
-    let mut count = 0u64; // Initialize pixel count for averaging
+    let (color_sum, count) = (y_start..y_end).into_par_iter().map(|y| {
+        let mut local_color_sum = (0u64, 0u64, 0u64); // Local sums for R, G, B
+        let mut local_count = 0u64; // Local pixel count for averaging
 
-    // Iterate over each pixel in the specified region
-    for y in (y_start..y_end).step_by(skip_pixels as usize) {
-        for x in (x_start..x_end).step_by(skip_pixels as usize) {
-            let index = (y * frame.width + x) as usize * 3; // Calculate buffer index
-
-            if index + 2 < frame.buffer.len() { // Ensure index does not exceed buffer length
-                let r = frame.buffer[index];
-                let g = frame.buffer[index + 1];
-                let b = frame.buffer[index + 2];
+        for x in x_start..x_end {
+            let index = (y * frame.width + x) as usize * 3; // Calculate buffer index (RGB)
+            if index + 2 < frame.data.len() { // Ensure index does not exceed buffer length
+                let r = frame.data[index];
+                let g = frame.data[index + 1];
+                let b = frame.data[index + 2];
 
                 // Check if the pixel is black; if not, include it in the averaging
                 if !(r == 0 && g == 0 && b == 0) {
-                    color_sum.0 += r as u64;      // Red
-                    color_sum.1 += g as u64;      // Green
-                    color_sum.2 += b as u64;      // Blue
-                    count += 1; // Increase count for each pixel processed
+                    local_color_sum.0 += r as u64; // Red
+                    local_color_sum.1 += g as u64; // Green
+                    local_color_sum.2 += b as u64; // Blue
+                    local_count += 1; // Increase count for each pixel processed
                 }
             }
         }
-    }
+
+        (local_color_sum, local_count)
+    }).reduce(|| ((0u64, 0u64, 0u64), 0u64), |acc, local| {
+        (
+            (acc.0 .0 + local.0 .0, acc.0 .1 + local.0 .1, acc.0 .2 + local.0 .2),
+            acc.1 + local.1,
+        )
+    });
 
     if count == 0 { // Avoid division by zero and handle case where all pixels might be black
         return [0, 0, 0];
@@ -77,28 +70,29 @@ mod tests {
     use std::iter;
 
     // Helper function to create a mock frame
-    fn mock_frame(width: u32, height: u32, fill: u8) -> Frame {
-        let size = (width * height * 3) as usize;
-        let buffer: Vec<u8> = iter::repeat(fill).take(size).collect();
-        Frame {
+    fn mock_frame(width: i32, height: i32, fill: u8) -> RGBFrame {
+        let size = (width * height * 3) as usize; // RGB
+        let data: Vec<u8> = iter::repeat(fill).take(size).collect();
+        RGBFrame {
+            display_time: 0,
             width,
             height,
-            buffer,
+            data,
         }
     }
 
     #[test]
     fn test_calculate_average_color() {
         let frame = mock_frame(100, 100, 255);  // Create a white frame
-        let avg_color = calculate_average_color(&frame, "top", 1);
+        let avg_color = calculate_average_color(&frame, "top");
         assert_eq!(avg_color, [255, 255, 255]);
 
         let frame = mock_frame(100, 100, 0);  // Create a black frame
-        let avg_color = calculate_average_color(&frame, "bottom", 1);
+        let avg_color = calculate_average_color(&frame, "bottom");
         assert_eq!(avg_color, [0, 0, 0]);
 
         // Test with skipping pixels
-        let avg_color = calculate_average_color(&frame, "left", 10);
+        let avg_color = calculate_average_color(&frame, "left");
         assert_eq!(avg_color, [0, 0, 0]);
     }
 

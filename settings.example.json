@@ -6,7 +6,6 @@
     ],
     "token": "YOUR_ACCESS_TOKEN",
     "grab_interval": 100,
-    "skip_pixels": 10,
     "smoothing_factor": 0.5,
     "monitor_id": 0
 }
