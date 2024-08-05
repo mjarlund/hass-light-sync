@@ -1,8 +1,8 @@
-use scap::frame::RGBFrame;
+use scap::frame::{BGRAFrame};
 use rayon::prelude::*;
 
 /// Calculates the average color of a specified region of the frame, ignoring black pixels.
-pub fn calculate_average_color(frame: &RGBFrame, position: &str) -> [u32; 3] {
+pub fn calculate_average_color(frame: &BGRAFrame, position: &str) -> [u32; 3] {
     let (x_start, x_end, y_start, y_end) = match position {
         "top" => (0, frame.width, 0, frame.height / 3),
         "bottom" => (0, frame.width, 2 * frame.height / 3, frame.height),
@@ -16,14 +16,15 @@ pub fn calculate_average_color(frame: &RGBFrame, position: &str) -> [u32; 3] {
         let mut local_count = 0u64; // Local pixel count for averaging
 
         for x in x_start..x_end {
-            let index = (y * frame.width + x) as usize * 3; // Calculate buffer index (RGB)
-            if index + 2 < frame.data.len() { // Ensure index does not exceed buffer length
-                let r = frame.data[index];
+            let index = (y * frame.width + x) as usize * 4; // Calculate buffer index (BGRA)
+            if index + 3 < frame.data.len() { // Ensure index does not exceed buffer length
+                let b = frame.data[index];
                 let g = frame.data[index + 1];
-                let b = frame.data[index + 2];
+                let r = frame.data[index + 2];
+                let a = frame.data[index + 3];
 
-                // Check if the pixel is black; if not, include it in the averaging
-                if !(r == 0 && g == 0 && b == 0) {
+                // Check if the pixel is black and not transparent; if not, include it in the averaging
+                if !(r == 0 && g == 0 && b == 0) && a > 0 {
                     local_color_sum.0 += r as u64; // Red
                     local_color_sum.1 += g as u64; // Green
                     local_color_sum.2 += b as u64; // Blue
@@ -70,10 +71,10 @@ mod tests {
     use std::iter;
 
     // Helper function to create a mock frame
-    fn mock_frame(width: i32, height: i32, fill: u8) -> RGBFrame {
-        let size = (width * height * 3) as usize; // RGB
+    fn mock_frame(width: i32, height: i32, fill: u8) -> BGRAFrame {
+        let size = (width * height * 4) as usize; // BGRA
         let data: Vec<u8> = iter::repeat(fill).take(size).collect();
-        RGBFrame {
+        BGRAFrame {
             display_time: 0,
             width,
             height,

@@ -67,7 +67,7 @@ async fn main() {
         show_cursor: false,
         show_highlight: false,
         excluded_targets: None,
-        output_type: scap::frame::FrameType::RGB,
+        output_type: scap::frame::FrameType::BGRAFrame,
         output_resolution: scap::capturer::Resolution::_720p,
         ..Default::default()
     };
@@ -94,7 +94,7 @@ async fn main() {
         }
 
         match capturer.get_next_frame() {
-            Ok(Frame::RGB(frame)) => {
+            Ok(Frame::BGRA(frame)) => {
                 if last_process_time.elapsed() >= Duration::from_millis(settings.grab_interval as u64) {
                     let frame_clone = frame.clone();
                     let settings_clone = settings.clone();
@@ -119,7 +119,7 @@ async fn main() {
 }
 
 async fn process_frame(
-    frame: &scap::frame::RGBFrame,
+    frame: &scap::frame::BGRAFrame,
     settings: &Settings,
     ws_client: &Arc<Mutex<WebSocketClient>>,
     prev_avg_colors: &mut HashMap<String, (u32, u32, u32)>,
