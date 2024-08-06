@@ -24,7 +24,7 @@ jobs:
             binary_files: target/release/hass-light-sync.exe settings.json
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install X11 dependencies on Linux
